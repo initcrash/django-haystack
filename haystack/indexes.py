@@ -18,11 +18,34 @@ class DeclarativeMetaclass(type):
         except NameError:
             pass
         
+        meta = attrs.pop('Meta', None)
+        translate = getattr(meta,'translate',())
+        attrs['translate'] = translate
+
         for field_name, obj in attrs.items():
             if isinstance(obj, SearchField):
                 field = attrs.pop(field_name)
                 field.instance_name = field_name
                 attrs['fields'][field_name] = field
+                
+                if field_name in translate:
+                    # if this is a translated field, create clones of it for
+                    # every language configured in settings.
+                    # the clones are identical to the main field, but with
+                    # "__xx" appendend (xx being the language code), and
+                    # 'document' set to False.
+                    for language in haystack.settings.LANGUAGES:
+                        lang_field = field.__class__(
+                            model_attr = field.model_attr,
+                            use_template = field.use_template,
+                            template_name = field.template_name,
+                            document = False,
+                            indexed = field.indexed,
+                            stored = field.stored,
+                            default = field.default,
+                        )
+                        lang_field.instance_name = field_name
+                        attrs['fields']['__'.join([field_name,language[0]])] = lang_field
         
         return super(DeclarativeMetaclass, cls).__new__(cls, name, bases, attrs)
 
@@ -60,6 +83,7 @@ class SearchIndex(object):
         
         if not len(content_fields) == 1:
             raise SearchFieldError("An index must have one (and only one) SearchField with document=True.")
+
     
     def get_query_set(self):
         """
@@ -74,15 +98,46 @@ class SearchIndex(object):
         Fetches and adds/alters data before indexing.
         """
         self.prepared_data = {}
+        from django.utils import translation
         
         for field_name, field in self.fields.items():
-            self.prepared_data[field_name] = field.prepare(obj)
-        
-        for field_name, field in self.fields.items():
-            if hasattr(self, "prepare_%s" % field_name):
-                value = getattr(self, "prepare_%s" % field_name)(obj)
-                self.prepared_data[field_name] = value
-        
+            try:
+                basename,suffix = field_name.rsplit('__',1)
+            except ValueError:
+                basename,suffix = field_name,None
+
+            if field_name in self.translate:
+                # this is a translated field
+                # the contents in all languages are joined together
+                # and inserted into the field, so the object can
+                # be found by search terms in any language
+                self.prepared_data[field_name] = ''
+                for language in haystack.settings.LANGUAGES:
+                    translation.activate(language[0])
+                    obj = self.model.objects.get(pk=obj.pk)
+                    if hasattr(self, "prepare_%s" % field_name):
+                        value = getattr(self, "prepare_%s" % field_name)(obj)
+                        self.prepared_data[field_name] += ' '+ value
+                    else:
+                        self.prepared_data[field_name] += ' '+ field.prepare(obj)
+            else:
+                if suffix and (basename in self.translate):
+                    # this is a clone of a translated field, it will hold
+                    # the contents in the language corresponding the its suffix.
+                    # to get the contents in the specific language, the locale is
+                    # first activated, and then the object is fetched again from
+                    # the database, because it is common to translate the model fields
+                    # on object load and not on field access.
+                    translation.activate(suffix)
+                    obj = self.model.objects.get(pk=obj.pk)
+                if hasattr(self, "prepare_%s" % basename):
+                    value = getattr(self, "prepare_%s" % basename)(obj)
+                    self.prepared_data[field_name] = value
+                else:
+                    self.prepared_data[field_name] = field.prepare(obj)
+
+            translation.deactivate()
+
         return self.prepared_data
     
     def get_content_field(self):

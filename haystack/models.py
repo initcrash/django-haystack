@@ -3,6 +3,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.utils.encoding import force_unicode
 from django.utils.text import capfirst
+from django.utils.translation import get_language
 
 
 # Not a Django model, but tightly tied to them and there doesn't seem to be a
@@ -24,8 +25,13 @@ class SearchResult(object):
         self._verbose_name = None
         
         for key, value in kwargs.items():
+            # set translated field contents according to the current locale
+            splited = key.rsplit('__',1)
+            if len(splited) == 2 and splited[1] == get_language():
+                self.__dict__[splited[0]] = value
             if not key in self.__dict__:
                 self.__dict__[key] = value
+
 
     def __repr__(self):
         return "<SearchResult: %s.%s (pk=%r)>" % (self.app_label, self.module_name, self.pk)
