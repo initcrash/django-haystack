@@ -27,6 +27,51 @@ grabbed from GitHub via http://github.com/toastdriven/pysolr/tree/master. In the
 near future, this should be merged into the main ``pysolr`` package and
 distributed via PyPI. Place ``pysolr.py`` somewhere on your ``PYTHONPATH``.
 
+More Like This
+--------------
+
+To enable the "More Like This" functionality in Haystack, you'll need
+to enable the ``MoreLikeThisHandler``. Add the following line to your
+``solrconfig.xml`` file within the ``config`` tag::
+
+    <requestHandler name="/mlt" class="solr.MoreLikeThisHandler" />
+
+Spelling Suggestions
+--------------------
+
+To enable the spelling suggestion functionality in Haystack, you'll need
+to setup the ``MoreLikeThisHandler``. Add the following line to your
+``solrconfig.xml`` file within the ``config`` tag::
+
+    <searchComponent name="spellcheck" class="solr.SpellCheckComponent">
+
+        <str name="queryAnalyzerFieldType">textSpell</str>
+
+        <lst name="spellchecker">
+          <str name="name">default</str>
+          <str name="field">text</str>
+          <str name="spellcheckIndexDir">./spellchecker1</str>
+          <str name="buildOnCommit">true</str>
+        </lst>
+    </searchComponent>
+
+Then change your default handler from::
+
+    <requestHandler name="standard" class="solr.StandardRequestHandler" default="true" />
+
+... to ...::
+
+    <requestHandler name="standard" class="solr.StandardRequestHandler" default="true">
+        <arr name="last-components">
+            <str>spellcheck</str>
+        </arr>
+    </requestHandler>
+
+Be warned that the ``<str name="field">text</str>`` portion will be specific to
+your ``SearchIndex`` classes (in this case, assuming the main field is called
+``text``). This should be the same as the ``<defaultSearchField>`` in your
+``schema.xml``.
+
 
 Whoosh
 ======
@@ -38,7 +83,7 @@ now (as of 2009/04/28), it requires a bit of patching (Whoosh version 0.1.15).
 A forked version that ought to be stable for Haystack use can be found at
 http://github.com/toastdriven/whoosh::
 
-    git clone http://github.com/toastdriven/whoosh
+    git clone http://github.com/toastdriven/whoosh.git
     cd whoosh
     sudo python setup.py install
 

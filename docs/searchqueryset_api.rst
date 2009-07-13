@@ -183,25 +183,80 @@ Example::
 ``facet(self, field)``
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented. Documentation coming soon.
+Adds faceting to a query for the provided field. You provide the field (from one
+of the ``SearchIndex`` classes) you like to facet on.
+
+In the search results you get back, facet counts will be populated in the
+``SearchResult`` object. You can access them via the ``facet_counts`` method.
+
+Example::
+
+    # Count document hits for each author within the index.
+    SearchQuerySet().filter(content='foo').facet('author')
 
 ``date_facet(self, field, **kwargs)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented. Documentation coming soon.
+Adds faceting to a query for the provided field by date. You provide the field
+(from one of the ``SearchIndex`` classes) you like to facet on and any
+parameters your engine of choice requires (Solr uses ``start_date``,
+``end_date`` and ``gap``).
+
+.. note::
+
+    This syntax will likely change before 1.0 release. It would be nice to
+    have a nicer, less backend-specific API (likely using the same filter syntax as
+    other methods). This is waiting on implementing other backends that support
+    faceting and ensuring that the API meets their needs as well.
+
+In the search results you get back, facet counts will be populated in the
+``SearchResult`` object. You can access them via the ``facet_counts`` method.
+
+Example::
+
+    # Count document hits for each day between 2009-06-07 to 2009-07-07 within the index.
+    SearchQuerySet().filter(content='foo').date_facet('pub_date', start_date=datetime.date(2009, 6, 7), end_date=datetime.date(2009, 7, 7), gap='+1DAY')
 
 ``query_facet(self, field, query)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented. Documentation coming soon.
+Adds faceting to a query for the provided field with a custom query. You provide
+the field (from one of the ``SearchIndex`` classes) you like to facet on and the
+backend-specific query (as a string) you'd like to execute.
+
+Please note that this is **NOT** portable between backends. The syntax is entirely
+dependent on the backend. No validation/cleansing is performed and it is up to
+the developer to ensure the query's syntax is correct.
+
+In the search results you get back, facet counts will be populated in the
+``SearchResult`` object. You can access them via the ``facet_counts`` method.
+
+Example::
+
+    # Count document hits for authors that start with 'jo' within the index.
+    SearchQuerySet().filter(content='foo').query_facet('author', 'jo*')
 
 ``narrow(self, query)``
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented. Documentation coming soon.
+Pulls a subset of documents from the search engine to search within. This is
+for advanced usage, especially useful when faceting.
 
-``raw_search(self, query_string)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Example::
+
+    # Search, from recipes containing 'blend', for recipes containing 'banana'.
+    SearchQuerySet().narrow('blend').filter(content='banana')
+    
+    # Using a fielded search where the recipe's title contains 'smoothie', find all recipes published before 2009.
+    SearchQuerySet().narrow('title:smoothie').filter(pub_date__lte=datetime.datetime(2009, 1, 1))
+
+Please note that this is, generally speaking, not necessarily portable between
+backends. The syntax is entirely dependent on the backend, though most backends
+have a similar syntax for basic fielded queries. No validation/cleansing is
+performed and it is up to the developer to ensure the query's syntax is correct.
+
+``raw_search(self, query_string, **kwargs)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Passes a raw query directly to the backend. This is for advanced usage, where
 the desired query can not be expressed via ``SearchQuerySet``.
@@ -209,11 +264,17 @@ the desired query can not be expressed via ``SearchQuerySet``.
 Example::
 
     # In the case of Solr... (this example could be expressed with SearchQuerySet)
-    SearchQuerySet().raw_search('django_ct_s:blog.blogentry "However, it is"')
+    SearchQuerySet().raw_search('django_ct:blog.blogentry "However, it is"')
 
 Please note that this is **NOT** portable between backends. The syntax is entirely
 dependent on the backend. No validation/cleansing is performed and it is up to
 the developer to ensure the query's syntax is correct.
+
+Further, the use of ``**kwargs`` are completely undocumented intentionally. If
+a third-party backend can implement special features beyond what's present, it
+should use those ``**kwargs`` for passing that information. Developers should
+be careful to make sure there are no conflicts with the backend's ``search``
+method, as that is called directly.
 
 ``load_all(self)``
 ~~~~~~~~~~~~~~~~~~
@@ -227,6 +288,30 @@ there are different object types returned.
 Example::
 
     SearchQuerySet().filter(content='foo').load_all()
+
+``load_all_queryset(self, model_class, queryset)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Allows for specifying a custom ``QuerySet`` that changes how ``load_all`` will
+fetch records for the provided model. This is useful for post-processing the
+results from the query, enabling things like adding ``select_related`` or
+filtering certain data.
+
+Example::
+
+    sqs = SearchQuerySet().filter(content='foo').load_all()
+    # For the Entry model, we want to include related models directly associated
+    # with the Entry to save on DB queries.
+    sqs = sqs.load_all_queryset(Entry, Entry.objects.all().select_related(depth=1))
+
+This method chains indefinitely, so you can specify ``QuerySets`` for as many
+models as you wish, one per model. The ``SearchQuerySet`` appends on a call to
+``in_bulk``, so be sure that the ``QuerySet`` you provide can accommodate this
+and that the ids passed to ``in_bulk`` will map to the model in question.
+
+If you need to do this frequently and have one ``QuerySet`` you'd like to apply
+everywhere, you can specify this at the ``SearchIndex`` level using the
+``load_all_queryset`` method. See :doc:`searchindex_api` for usage.
 
 ``auto_query(self, query_string)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -322,7 +407,58 @@ Example::
 ``facet_counts(self)``
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Implemented. Documentation coming soon.
+Returns the facet counts found by the query. This will cause the query to
+execute and should generally be used when presenting the data (template-level).
+
+You receive back a dictionary with three keys: ``fields``, ``dates`` and
+``queries``. Each contains the facet counts for whatever facets you specified
+within your ``SearchQuerySet``.
+
+.. note::
+
+    The resulting dictionary may change before 1.0 release. It's fairly
+    backend-specific at the time of writing. Standardizing is waiting on
+    implementing other backends that support faceting and ensuring that the
+    results presented will meet their needs as well.
+
+Example::
+
+    # Count document hits for each author.
+    sqs = SearchQuerySet().filter(content='foo').facet('author')
+    
+    sqs.facet_counts()
+    # Gives the following response:
+    # {
+    #     'dates': {},
+    #     'fields': {
+    #         'author': [
+    #             ('john', 4),
+    #             ('daniel', 2),
+    #             ('sally', 1),
+    #             ('terry', 1),
+    #         ],
+    #     },
+    #     'queries': {}
+    # }
+
+``spelling_suggestion(self)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Returns the spelling suggestion found by the query.
+
+To work, you must set ``settings.HAYSTACK_INCLUDE_SPELLING`` (see
+:doc:`settings`) to ``True``. Otherwise, ``None`` will be returned.
+
+This method causes the query to evaluate and run the search if it hasn't already
+run. Search results will be populated as normal but with an additional spelling
+suggestion. Note that this does *NOT* run the revised query, only suggests
+improvements.
+
+Example::
+
+    sqs = SearchQuerySet().auto_query('mor exmples')
+    sqs.spelling_suggestion() # u'more examples'
+
 
 .. _field-lookups:
 
@@ -337,6 +473,7 @@ The following lookup types are supported:
 * lt
 * lte
 * in
+* startswith
 
 These options are similar in function to the way Django's lookup types work.
 The actual behavior of these lookups is backend-specific.

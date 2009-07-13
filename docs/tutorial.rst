@@ -88,7 +88,7 @@ default ``SearchIndex``.
 If autodiscovery and inclusion of all indexes is not desirable, you can manually
 register models in the following manner::
 
-    from haystack.sites import site
+    from haystack import site
     
     site.register(Note)
 
@@ -97,7 +97,7 @@ model gets registered with a standard ``SearchIndex`` class. If you need to over
 this class and provide additional functionality, you can manually register your
 own indexes like::
 
-    from haystack.sites import site
+    from haystack import site
     
     site.register(Note, NoteIndex)
 
@@ -125,7 +125,7 @@ include our own ``SearchIndex`` to exclude indexing future-dated notes::
 
     import datetime
     from haystack import indexes
-    from haystack.sites import site
+    from haystack import site
     from myapp.models import Note
     
     
@@ -159,6 +159,12 @@ well as the date the document was published. The variable you assign the
 SearchField to should directly map to the field your search backend is 
 expecting. You instantiate most search fields with a parameter that points to
 the attribute of the object to populate that field with.
+
+.. note::
+
+    There is nothing special about the ``text`` field name used in all of the
+    examples. It could be anything; you could call it ``pink_polka_dot`` and
+    it won't matter. It's simply a convention to call it ``text``.
 
 The exception to this is the ``TemplateField`` class.
 This take either no arguments or an explicit template name to populate their contents.

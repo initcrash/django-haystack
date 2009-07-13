@@ -56,6 +56,22 @@ An example::
 Defaults to ``20``.
 
 
+``HAYSTACK_INCLUDE_SPELLING``
+=============================
+
+**Optional**
+
+This setting controls if spelling suggestions should be included in search
+results. This can potentially have performance implications so it is disabled
+by default.
+
+An example::
+
+    HAYSTACK_INCLUDE_SPELLING = True
+
+Works for the ``solr`` and ``whoosh`` backends.
+
+
 ``HAYSTACK_SOLR_URL``
 =====================
 
@@ -70,6 +86,20 @@ Examples::
     HAYSTACK_SOLR_URL = 'http://solr.mydomain.com/solr/mysite'
 
 No default is provided.
+
+
+``HAYSTACK_SOLR_TIMEOUT``
+=========================
+
+**Optional when using the ``solr`` backend**
+
+This setting controls the time to wait for a response from Solr in seconds.
+
+Examples::
+
+    HAYSTACK_SOLR_TIMEOUT = 30
+
+The default is 10 seconds.
 
 
 ``HAYSTACK_WHOOSH_PATH``
@@ -91,3 +121,19 @@ An example::
     HAYSTACK_WHOOSH_PATH = '/home/mysite/whoosh_index'
 
 No default is provided.
+
+
+``HAYSTACK_BATCH_SIZE``
+=======================
+
+**Optional**
+
+This setting controls the number of model instances loaded at a time while
+reindexing. This affects how often the search indexes must merge (an intensive
+operation).
+
+An example::
+
+    HAYSTACK_BATCH_SIZE = 100
+
+The default is 1000 models per commit.

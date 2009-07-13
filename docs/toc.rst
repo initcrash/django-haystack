@@ -6,14 +6,18 @@ Table Of Contents
    
    index
    tutorial
+   views_and_forms
    architecture_overview
    backend_support
    installing_search_engines
    settings
    faq
    
+   faceting
+   
    searchqueryset_api
    searchindex_api
+   searchresult_api
    searchsite_api
    searchquery_api
    searchbackend_api

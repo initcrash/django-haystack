@@ -4,38 +4,41 @@ import re
 import warnings
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.db.models.loading import get_model
 from django.utils.encoding import force_unicode
 from haystack.backends import BaseSearchBackend, BaseSearchQuery
 from haystack.exceptions import MissingDependency, SearchBackendError
 from haystack.models import SearchResult
 try:
     from whoosh import store
+    from whoosh.analysis import StemmingAnalyzer
     from whoosh.fields import Schema, ID, STORED, TEXT, KEYWORD
     import whoosh.index as index
     from whoosh.qparser import QueryParser
+    from whoosh.spelling import SpellChecker
 except ImportError:
     raise MissingDependency("The 'whoosh' backend requires the installation of 'Whoosh'. Please refer to the documentation.")
 
 
-# Word reserved by Whoosh for special use.
-RESERVED_WORDS = (
-    'AND',
-    'NOT',
-    'OR',
-    'TO',
-)
-
-# Characters reserved by Whoosh for special use.
-# The '\\' must come first, so as not to overwrite the other slash replacements.
-RESERVED_CHARACTERS = (
-    '\\', '+', '-', '&&', '||', '!', '(', ')', '{', '}', 
-    '[', ']', '^', '"', '~', '*', '?', ':', '.',
-)
-
-DATETIME_REGEX = re.compile('^(\"?)(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\.000Z(\"?)$')
+DATETIME_REGEX = re.compile('^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})T(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})(\.\d{3,6}Z?)?$')
 
 
 class SearchBackend(BaseSearchBackend):
+    # Word reserved by Whoosh for special use.
+    RESERVED_WORDS = (
+        'AND',
+        'NOT',
+        'OR',
+        'TO',
+    )
+
+    # Characters reserved by Whoosh for special use.
+    # The '\\' must come first, so as not to overwrite the other slash replacements.
+    RESERVED_CHARACTERS = (
+        '\\', '+', '-', '&&', '||', '!', '(', ')', '{', '}',
+        '[', ']', '^', '"', '~', '*', '?', ':', '.',
+    )
+    
     def __init__(self, site=None):
         super(SearchBackend, self).__init__(site)
         self.setup_complete = False
@@ -72,8 +75,8 @@ class SearchBackend(BaseSearchBackend):
     def build_schema(self, fields):
         schema_fields = {
             'id': ID(stored=True, unique=True),
-            'django_ct_s': ID(stored=True),
-            'django_id_s': ID(stored=True),
+            'django_ct': ID(stored=True),
+            'django_id': ID(stored=True),
         }
         # Grab the number of keys that are hard-coded into Haystack.
         # We'll use this to (possibly) fail slightly more gracefully later.
@@ -82,13 +85,13 @@ class SearchBackend(BaseSearchBackend):
         for field in fields:
             if field['multi_valued'] is True:
                 schema_fields[field['field_name']] = KEYWORD(stored=True, comma=True)
-            elif field['type'] in ('slong', 'sfloat', 'boolean', 'date'):
+            elif field['type'] in ('long', 'float', 'boolean', 'date', 'datetime'):
                 if field['indexed'] is False:
                     schema_fields[field['field_name']] = STORED
                 else:
                     schema_fields[field['field_name']] = ID(stored=True)
             elif field['type'] == 'text':
-                schema_fields[field['field_name']] = TEXT(stored=True)
+                schema_fields[field['field_name']] = TEXT(stored=True, analyzer=StemmingAnalyzer())
             else:
                 raise SearchBackendError("Whoosh backend does not support type '%s'. Please report this bug." % field['type'])
         
@@ -108,8 +111,8 @@ class SearchBackend(BaseSearchBackend):
         for obj in iterable:
             doc = {}
             doc['id'] = force_unicode(self.get_identifier(obj))
-            doc['django_ct_s'] = force_unicode("%s.%s" % (obj._meta.app_label, obj._meta.module_name))
-            doc['django_id_s'] = force_unicode(obj.pk)
+            doc['django_ct'] = force_unicode("%s.%s" % (obj._meta.app_label, obj._meta.module_name))
+            doc['django_id'] = force_unicode(obj.pk)
             other_data = index.prepare(obj)
             
             # Really make sure it's unicode, because Whoosh won't have it any
@@ -122,12 +125,17 @@ class SearchBackend(BaseSearchBackend):
         
         # For now, commit no matter what, as we run into locking issues otherwise.
         writer.commit()
+        
+        # If spelling support is desired, add to the dictionary.
+        if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False) is True:
+            sp = SpellChecker(self.storage)
+            sp.add_field(self.index, self.content_field_name)
 
-    def remove(self, obj, commit=True):
+    def remove(self, obj_or_string, commit=True):
         if not self.setup_complete:
             self.setup()
         
-        whoosh_id = self.get_identifier(obj)
+        whoosh_id = self.get_identifier(obj_or_string)
         self.index.delete_by_query(q=self.parser.parse('id:"%s"' % whoosh_id))
         
         # For now, commit no matter what, as we run into locking issues otherwise.
@@ -143,7 +151,7 @@ class SearchBackend(BaseSearchBackend):
             models_to_delete = []
             
             for model in models:
-                models_to_delete.append("django_ct_s:%s.%s" % (model._meta.app_label, model._meta.module_name))
+                models_to_delete.append("django_ct:%s.%s" % (model._meta.app_label, model._meta.module_name))
             
             self.index.delete_by_query(q=self.parser.parse(" OR ".join(models_to_delete)))
         
@@ -172,18 +180,24 @@ class SearchBackend(BaseSearchBackend):
 
     def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
                fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
-               narrow_queries=None):
+               narrow_queries=None, **kwargs):
         if not self.setup_complete:
             self.setup()
         
         # A zero length query should return no results.
         if len(query_string) == 0:
-            return []
+            return {
+                'results': [],
+                'hits': 0,
+            }
         
         # A one-character query (non-wildcard) gets nabbed by a stopwords
         # filter and should yield zero results.
         if len(query_string) <= 1 and query_string != '*':
-            return []
+            return {
+                'results': [],
+                'hits': 0,
+            }
         
         reverse = False
         
@@ -228,20 +242,49 @@ class SearchBackend(BaseSearchBackend):
         if query_facets is not None:
             warnings.warn("Whoosh does not handle query faceting.", Warning, stacklevel=2)
         
+        narrowed_results = None
+        
         if narrow_queries is not None:
-            # DRL_FIXME: Determine if Whoosh can do this.
-            # kwargs['fq'] = list(narrow_queries)
-            pass
+            # Potentially expensive? I don't see another way to do it in Whoosh...
+            narrow_searcher = self.index.searcher()
+            
+            for nq in narrow_queries:
+                recent_narrowed_results = narrow_searcher.search(self.parser.parse(nq))
+                
+                if narrowed_results:
+                    narrowed_results.filter(recent_narrowed_results)
+                else:
+                   narrowed_results = recent_narrowed_results
         
         if self.index.doc_count:
             searcher = self.index.searcher()
+            parsed_query = self.parser.parse(query_string)
+            
+            # In the event of an invalid/stopworded query, recover gracefully.
+            if parsed_query is None:
+                return {
+                    'results': [],
+                    'hits': 0,
+                }
+            
             # DRL_TODO: Ignoring offsets for now, as slicing caused issues with pagination.
-            raw_results = searcher.search(self.parser.parse(query_string), sortedby=sort_by, reverse=reverse)
+            raw_results = searcher.search(parsed_query, sortedby=sort_by, reverse=reverse)
+            
+            # Handle the case where the results have been narrowed.
+            if narrowed_results:
+                raw_results.filter(narrowed_results)
+            
             return self._process_results(raw_results, highlight=highlight, query_string=query_string)
         else:
+            if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False):
+                spelling_suggestion = self.create_spelling_suggestion(query_string)
+            else:
+                spelling_suggestion = None
+            
             return {
                 'results': [],
                 'hits': 0,
+                'spelling_suggestion': spelling_suggestion,
             }
     
     def more_like_this(self, model_instance):
@@ -252,21 +295,23 @@ class SearchBackend(BaseSearchBackend):
         }
     
     def _process_results(self, raw_results, highlight=False, query_string=''):
+        from haystack import site
         results = []
+        hits = len(raw_results)
         facets = {}
+        spelling_suggestion = None
+        indexed_models = site.get_indexed_models()
         
-        for raw_result in raw_results:
+        for doc_offset, raw_result in enumerate(raw_results):
             raw_result = dict(raw_result)
-            app_label, module_name = raw_result['django_ct_s'].split('.')
+            app_label, model_name = raw_result['django_ct'].split('.')
             additional_fields = {}
             
             for key, value in raw_result.items():
                 additional_fields[str(key)] = self._to_python(value)
             
-            del(additional_fields['django_ct_s'])
-            del(additional_fields['django_id_s'])
-            # DRL_FIXME: Figure out if there's a way to get the score out of Whoosh.
-            # del(additional_fields['score'])
+            del(additional_fields['django_ct'])
+            del(additional_fields['django_id'])
             
             if highlight:
                 from whoosh import analysis
@@ -279,14 +324,63 @@ class SearchBackend(BaseSearchBackend):
                     self.content_field_name: [highlight(additional_fields.get(self.content_field_name), terms, sa, ContextFragmenter(terms), UppercaseFormatter())],
                 }
             
-            result = SearchResult(app_label, module_name, raw_result['django_id_s'], raw_result.get('score', 0), **additional_fields)
-            results.append(result)
+            # Requires Whoosh 0.1.20+.
+            if hasattr(raw_results, 'score'):
+                score = raw_results.score(doc_offset)
+            else:
+                score = None
+            
+            if score is None:
+                score = 0
+            
+            model = get_model(app_label, model_name)
+            
+            if model:
+                if model in indexed_models:
+                    result = SearchResult(app_label, model_name, raw_result['django_id'], score, **additional_fields)
+                    results.append(result)
+                else:
+                    hits -= 1
+            else:
+                hits -= 1
+        
+        if getattr(settings, 'HAYSTACK_INCLUDE_SPELLING', False) is True:
+            spelling_suggestion = self.create_spelling_suggestion(query_string)
         
         return {
             'results': results,
-            'hits': len(results),
+            'hits': hits,
             'facets': facets,
+            'spelling_suggestion': spelling_suggestion,
         }
+    
+    def create_spelling_suggestion(self, query_string):
+        spelling_suggestion = None
+        sp = SpellChecker(self.storage)
+        cleaned_query = query_string
+        
+        if not query_string:
+            return spelling_suggestion
+        
+        # Clean the string.
+        for rev_word in self.RESERVED_WORDS:
+            cleaned_query = cleaned_query.replace(rev_word, '')
+        
+        for rev_char in self.RESERVED_CHARACTERS:
+            cleaned_query = cleaned_query.replace(rev_char, '')
+        
+        # Break it down.
+        query_words = cleaned_query.split()
+        suggested_words = []
+        
+        for word in query_words:
+            suggestions = sp.suggest(word, number=1)
+            
+            if len(suggestions) > 0:
+                suggested_words.append(suggestions[0])
+        
+        spelling_suggestion = ' '.join(suggested_words)
+        return spelling_suggestion
     
     def _from_python(self, value):
         """
@@ -295,9 +389,9 @@ class SearchBackend(BaseSearchBackend):
         Code courtesy of pysolr.
         """
         if isinstance(value, datetime.datetime):
-            value = force_unicode(value.strftime('\"%Y-%m-%dT%H:%M:%S.000Z\"'))
+            value = force_unicode('%s' % value.isoformat())
         elif isinstance(value, datetime.date):
-            value = force_unicode(value.strftime('\"%Y-%m-%dT00:00:00.000Z\"'))
+            value = force_unicode('%sT00:00:00' % value.isoformat())
         elif isinstance(value, bool):
             if value:
                 value = u'true'
@@ -391,6 +485,7 @@ class SearchQuery(BaseSearchQuery):
                         'gte': "NOT %s:*..%s",
                         'lt': "%s:*..%s",
                         'lte': "NOT %s:%s..*",
+                        'startswith': "%s:%s*",
                     }
                     
                     if the_filter.filter_type != 'in':
@@ -399,7 +494,7 @@ class SearchQuery(BaseSearchQuery):
                         in_options = []
                         
                         for possible_value in value:
-                            in_options.append("%s:%s" % (the_filter.field, possible_value))
+                            in_options.append('%s:"%s"' % (the_filter.field, self.backend._from_python(possible_value)))
                         
                         query_chunks.append("(%s)" % " OR ".join(in_options))
             
@@ -410,7 +505,7 @@ class SearchQuery(BaseSearchQuery):
             query = " ".join(query_chunks)
         
         if len(self.models):
-            models = ['django_ct_s:"%s.%s"' % (model._meta.app_label, model._meta.module_name) for model in self.models]
+            models = ['django_ct:"%s.%s"' % (model._meta.app_label, model._meta.module_name) for model in self.models]
             models_clause = ' OR '.join(models)
             final_query = '(%s) AND (%s)' % (query, models_clause)
         else:
@@ -425,22 +520,6 @@ class SearchQuery(BaseSearchQuery):
             final_query = "%s %s" % (final_query, " ".join(boost_list))
         
         return final_query
-    
-    def clean(self, query_fragment):
-        """Sanitizes a fragment from using reserved character/words."""
-        words = query_fragment.split()
-        cleaned_words = []
-        
-        for word in words:
-            if word in RESERVED_WORDS:
-                word = word.replace(word, word.lower())
-        
-            for char in RESERVED_CHARACTERS:
-                word = word.replace(char, '\\%s' % char)
-            
-            cleaned_words.append(word)
-        
-        return " ".join(cleaned_words)
     
     def run(self):
         """Builds and executes the query. Returns a list of search results."""
@@ -474,3 +553,4 @@ class SearchQuery(BaseSearchQuery):
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
         self._facet_counts = results.get('facets', {})
+        self._spelling_suggestion = results.get('spelling_suggestion', None)

@@ -1,6 +1,7 @@
 import os
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from haystack.sites import site
 
 
 __author__ = 'Daniel Lindsley'
@@ -96,15 +97,6 @@ def handle_registrations(*args, **kwargs):
         models.loading.cache.get_apps()
         
         urlconf = __import__(settings.ROOT_URLCONF)
-        from haystack.sites import site
-        
-        if settings.DEBUG:
-            index_count = len(site.get_indexed_models())
-            
-            if index_count and settings.DEBUG is True:
-                print "Loaded URLconf to initialize SearchSite..."
-                print "Main site registered %s index(es)." % index_count
-        
         handle_registrations.previously_initialized = True
 
 handle_registrations.previously_initialized = False

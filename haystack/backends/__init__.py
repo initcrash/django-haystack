@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 from django.db.models.base import ModelBase
 from django.utils.encoding import force_unicode
 from haystack.constants import VALID_FILTERS, FILTER_SEPARATOR
@@ -9,7 +10,14 @@ except NameError:
     from sets import Set as set
 
 
+IDENTIFIER_REGEX = re.compile('^[\w\d_]+\.[\w\d_]+\.\d+$')
+
+
 class BaseSearchBackend(object):
+    # Backends should include their own reserved words/characters.
+    RESERVED_WORDS = []
+    RESERVED_CHARACTERS = []
+    
     """
     Abstract search engine base class.
     """
@@ -17,16 +25,23 @@ class BaseSearchBackend(object):
         if site is not None:
             self.site = site
         else:
-            from haystack.sites import site
+            from haystack import site
             self.site = site
     
-    def get_identifier(self, obj):
+    def get_identifier(self, obj_or_string):
         """
-        Get an unique identifier for the object.
+        Get an unique identifier for the object or a string representing the
+        object.
 
         If not overridden, uses <app_label>.<object_name>.<pk>.
         """
-        return u"%s.%s.%s" % (obj._meta.app_label, obj._meta.module_name, obj._get_pk_val())
+        if isinstance(obj_or_string, basestring):
+            if not IDENTIFIER_REGEX.match(obj_or_string):
+                raise AttributeError("Provided string '%s' is not a valid identifier." % obj_or_string)
+            
+            return obj_or_string
+        
+        return u"%s.%s.%s" % (obj_or_string._meta.app_label, obj_or_string._meta.module_name, obj_or_string._get_pk_val())
 
     def update(self, index, iterable):
         """
@@ -38,9 +53,11 @@ class BaseSearchBackend(object):
         """
         raise NotImplementedError
 
-    def remove(self, obj):
+    def remove(self, obj_or_string):
         """
-        Removes a document/object from the backend.
+        Removes a document/object from the backend. Can be either a model
+        instance or the identifier (i.e. ``app_name.model_name.id``) in the
+        event the object no longer exists.
         
         This method MUST be implemented by each backend, as it will be highly
         specific to each one.
@@ -56,7 +73,9 @@ class BaseSearchBackend(object):
         """
         raise NotImplementedError
 
-    def search(self, query_string, sort_by=None, start_offset=0, end_offset=None, fields=[], highlight=False):
+    def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
+               fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
+               narrow_queries=None, **kwargs):
         """
         Takes a query to search on and returns dictionary.
         
@@ -189,6 +208,7 @@ class BaseSearchQuery(object):
         self._results = None
         self._hit_count = None
         self._facet_counts = None
+        self._spelling_suggestion = None
         self.backend = backend or SearchBackend()
     
     def __str__(self):
@@ -222,6 +242,7 @@ class BaseSearchQuery(object):
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
         self._facet_counts = results.get('facets', {})
+        self._spelling_suggestion = results.get('spelling_suggestion', None)
     
     def get_count(self):
         """
@@ -249,7 +270,7 @@ class BaseSearchQuery(object):
     
     def get_facet_counts(self):
         """
-        Returns the results received from the backend.
+        Returns the facet counts received from the backend.
         
         If the query has not been run, this will execute the query and store
         the results.
@@ -258,6 +279,18 @@ class BaseSearchQuery(object):
             self.run()
         
         return self._facet_counts
+    
+    def get_spelling_suggestion(self):
+        """
+        Returns the spelling suggestion received from the backend.
+        
+        If the query has not been run, this will execute the query and store
+        the results.
+        """
+        if self._spelling_suggestion is None:
+            self.run()
+        
+        return self._spelling_suggestion
     
     
     # Methods for backends to implement.
@@ -277,10 +310,21 @@ class BaseSearchQuery(object):
         Provides a mechanism for sanitizing user input before presenting the
         value to the backend.
         
-        This method MUST be implemented by each backend, as it will be highly
-        specific to each one.
+        A basic (override-able) implementation is provided.
         """
-        raise NotImplementedError("Subclasses must provide a way to sanitize a portion of the query via the 'clean' method.")
+        words = query_fragment.split()
+        cleaned_words = []
+        
+        for word in words:
+            if word in self.backend.RESERVED_WORDS:
+                word = word.replace(word, word.lower())
+        
+            for char in self.backend.RESERVED_CHARACTERS:
+                word = word.replace(char, '\\%s' % char)
+            
+            cleaned_words.append(word)
+        
+        return ' '.join(cleaned_words)
     
     
     # Standard methods to alter the query.
@@ -328,14 +372,14 @@ class BaseSearchQuery(object):
         """Adds a boosted field and the amount to boost it to the query."""
         self.boost[field] = boost_value
     
-    def raw_search(self, query_string):
+    def raw_search(self, query_string, **kwargs):
         """
         Runs a raw query (no parsing) against the backend.
         
         This method does not affect the internal state of the SearchQuery used
         to build queries. It does however populate the results/hit_count.
         """
-        results = self.backend.search(query_string)
+        results = self.backend.search(query_string, **kwargs)
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
     

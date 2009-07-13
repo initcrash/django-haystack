@@ -23,8 +23,21 @@ you up and running:
 .. toctree::
    :maxdepth: 1
    
+   views_and_forms
    faq
    installing_search_engines
+
+
+Advanced Uses
+-------------
+
+Once you've got Haystack working, here are some of the more complex features
+you may want to include in your application.
+
+.. toctree::
+   :maxdepth: 1
+   
+   faceting
 
 
 Reference
@@ -38,6 +51,7 @@ looking for API documentation and advanced usage as detailed in:
    
    searchqueryset_api
    searchindex_api
+   searchresult_api
    searchsite_api
    searchquery_api
    searchbackend_api
@@ -59,3 +73,15 @@ additional backends:
    
    running_tests
    creating_new_backends
+
+
+Requirements
+------------
+
+Haystack has a relatively easily-met set of requirements.
+
+* Python 2.4+ (may work on 2.3 but untested)
+* Django 1.0+
+
+Additionally, each backend has its own requirements. You should refer to
+:doc:`installing_search_engines` for more details.
