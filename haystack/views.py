@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.core.paginator import Paginator
+from django.core.paginator import Paginator,EmptyPage,InvalidPage
 from django.http import Http404
 from django.shortcuts import render_to_response
 from django.template import RequestContext
@@ -85,9 +85,13 @@ class SearchView(object):
         paginator = Paginator(self.results, RESULTS_PER_PAGE)
         
         try:
-            page = paginator.page(int(self.request.GET.get('page', 1)))
+            try:
+                page = paginator.page(int(self.request.GET.get('page', 1)))
+            except (EmptyPage, InvalidPage):
+                page = paginator.page(paginator.num_pages)
         except ValueError:
             raise Http404
+
         
         return (paginator, page)
     
