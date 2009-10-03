@@ -55,11 +55,25 @@ class MockSearchBackend(BaseSearchBackend):
             'hits': hits,
         }
     
-    def more_like_this(self, model_instance):
+    def more_like_this(self, model_instance, additional_query_string=None):
         return {
             'results': MOCK_SEARCH_RESULTS,
             'hits': len(MOCK_SEARCH_RESULTS),
         }
+
+
+class MixedMockSearchBackend(MockSearchBackend):
+    def search(self, query, highlight=False):
+        result_info = super(MixedMockSearchBackend, self).search(query, highlight)
+        result_info['results'] = result_info['results'][:30]
+        result_info['hits'] = 30
+        
+        # Add search results from other models.
+        del(result_info['results'][9]) # MockSearchResult('core', 'AnotherMockModel', 9, .1)
+        del(result_info['results'][13]) # MockSearchResult('core', 'AnotherMockModel', 13, .1)
+        del(result_info['results'][14]) # MockSearchResult('core', 'NonexistentMockModel', 14, .1)
+        
+        return result_info
 
 
 class MockSearchQuery(BaseSearchQuery):
@@ -74,5 +88,13 @@ class MockSearchQuery(BaseSearchQuery):
         # of our results using start/end offset.
         final_query = self.build_query()
         results = self.backend.search(final_query)
+        self._results = results['results'][self.start_offset:self.end_offset]
+        self._hit_count = results['hits']
+    
+    def run_mlt(self):
+        # To simulate the chunking behavior of a regular search, return a slice
+        # of our results using start/end offset.
+        final_query = self.build_query()
+        results = self.backend.more_like_this(self._mlt_instance, final_query)
         self._results = results['results'][self.start_offset:self.end_offset]
         self._hit_count = results['hits']

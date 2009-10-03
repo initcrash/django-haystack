@@ -38,14 +38,14 @@ class SearchQuerySet(object):
     def __repr__(self):
         data = list(self[:REPR_OUTPUT_SIZE])
         
-        if len(data) > REPR_OUTPUT_SIZE:
+        if len(self) > REPR_OUTPUT_SIZE:
             data[-1] = "...(remaining elements truncated)..."
         
         return repr(data)
     
     def __len__(self):
         # This needs to return the actual number of hits, not what's in the cache.
-        return self.query.get_count()
+        return self.query.get_count() - self._ignored_result_count
     
     def __iter__(self):
         if self._cache_is_full():
@@ -56,7 +56,7 @@ class SearchQuerySet(object):
     
     def _cache_is_full(self):
         # Use ">=" because it's possible that search results have disappeared.
-        return len(self._result_cache) >= len(self) - self._ignored_result_count
+        return len(self._result_cache) >= len(self)
     
     def _manual_iter(self):
         # If we're here, our cache isn't fully populated.
@@ -87,6 +87,7 @@ class SearchQuerySet(object):
         
         # Tell the query where to start from and how many we'd like.
         cache_length = len(self._result_cache)
+        self.query._reset()
         self.query.set_limits(cache_length, cache_length + ITERATOR_LOAD_PER_QUERY)
         results = self.query.get_results()
         
@@ -117,6 +118,9 @@ class SearchQuerySet(object):
                         # the current site. We should silently fail and populate
                         # nothing for those objects.
                         loaded_objects[model] = []
+        
+        if len(results) + len(self._result_cache) < len(self) and len(results) < ITERATOR_LOAD_PER_QUERY:
+            self._ignored_result_count += ITERATOR_LOAD_PER_QUERY - len(results)
         
         for result in results:
             if self._load_all:
@@ -195,6 +199,10 @@ class SearchQuerySet(object):
         """Returns all results for the query."""
         return self._clone()
     
+    def none(self):
+        """Returns all results for the query."""
+        return self._clone(klass=EmptySearchQuerySet)
+    
     def filter(self, **kwargs):
         """Narrows the search based on certain attributes and the default operator."""
         if getattr(settings, 'HAYSTACK_DEFAULT_OPERATOR', DEFAULT_OPERATOR) == 'OR':
@@ -254,13 +262,10 @@ class SearchQuerySet(object):
         
         return clone
     
-    def boost(self, **kwargs):
+    def boost(self, term, boost):
         """Boosts a certain aspect of the query."""
         clone = self._clone()
-        
-        for field, boost_value in kwargs.items():
-            clone.query.add_boost(field, boost_value)
-        
+        clone.query.add_boost(term, boost)
         return clone
     
     def facet(self, field):
@@ -269,10 +274,10 @@ class SearchQuerySet(object):
         clone.query.add_field_facet(field)
         return clone
     
-    def date_facet(self, field, **kwargs):
+    def date_facet(self, field, start_date, end_date, gap_by, gap_amount=1):
         """Adds faceting to a query for the provided field by date."""
         clone = self._clone()
-        clone.query.add_date_facet(field, **kwargs)
+        clone.query.add_date_facet(field, start_date, end_date, gap_by, gap_amount=gap_amount)
         return clone
     
     def query_facet(self, field, query):
@@ -342,7 +347,7 @@ class SearchQuerySet(object):
         for keyword in keywords:
             exclude = False
             
-            if keyword.startswith('-'):
+            if keyword.startswith('-') and len(keyword) > 1:
                 keyword = keyword[1:]
                 exclude = True
             
@@ -390,7 +395,7 @@ class SearchQuerySet(object):
         clone = self._clone()
         return clone.query.get_facet_counts()
     
-    def spelling_suggestion(self):
+    def spelling_suggestion(self, preferred_query=None):
         """
         Returns the spelling suggestion found by the query.
         
@@ -401,7 +406,7 @@ class SearchQuerySet(object):
         presenting the data.
         """
         clone = self._clone()
-        return clone.query.get_spelling_suggestion()
+        return clone.query.get_spelling_suggestion(preferred_query)
     
     
     # Utility methods.
@@ -414,4 +419,22 @@ class SearchQuerySet(object):
         clone = klass(site=self.site, query=query)
         clone._load_all = self._load_all
         clone._load_all_querysets = self._load_all_querysets
+        return clone
+
+
+class EmptySearchQuerySet(SearchQuerySet):
+    """
+    A stubbed SearchQuerySet that behaves as normal but always returns no
+    results.
+    """
+    def __len__(self):
+        return 0
+    
+    def _cache_is_full(self):
+        # Pretend the cache is always full with no results.
+        return True
+    
+    def _clone(self, klass=None):
+        clone = super(EmptySearchQuerySet, self)._clone(klass=klass)
+        clone._result_cache = []
         return clone

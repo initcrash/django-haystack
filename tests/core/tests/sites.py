@@ -1,6 +1,8 @@
 import datetime
 from django.test import TestCase
 from haystack import indexes
+from haystack.exceptions import SearchFieldError
+from haystack.fields import CharField
 from haystack.sites import SearchSite, AlreadyRegistered, NotRegistered
 from core.models import MockModel, AnotherMockModel
 
@@ -21,6 +23,10 @@ class FakeSearchIndex(indexes.BasicSearchIndex):
         # make it here. We rely on the `SearchIndex` tests to ensure correct
         # behavior.
         return True
+
+
+class InvalidSeachIndex(indexes.SearchIndex):
+    document = indexes.CharField(document=True)
 
 
 class SearchSiteTestCase(TestCase):
@@ -69,16 +75,26 @@ class SearchSiteTestCase(TestCase):
         self.assertEqual(len(indexed_models), 1)
         self.assert_(MockModel in indexed_models)
     
-    def test_build_unified_schema(self):
+    def test_all_searchfields(self):
         self.site.register(MockModel)
-        content_field_name, fields = self.site.build_unified_schema()
-        self.assertEqual(content_field_name, 'text')
-        self.assertEqual(fields, [{'indexed': 'true', 'type': 'text', 'field_name': 'text', 'multi_valued': 'false'}])
+        fields = self.site.all_searchfields()
+        self.assertEqual(len(fields), 1)
+        self.assert_('text' in fields)
+        self.assert_(isinstance(fields['text'], CharField))
+        self.assertEqual(fields['text'].document, True)
+        self.assertEqual(fields['text'].use_template, True)
         
         self.site.register(AnotherMockModel)
-        content_field_name, fields = self.site.build_unified_schema()
-        self.assertEqual(content_field_name, 'text')
-        self.assertEqual(fields, [{'indexed': 'true', 'type': 'text', 'field_name': 'text', 'multi_valued': 'false'}])
+        fields = self.site.all_searchfields()
+        self.assertEqual(len(fields), 1)
+        self.assert_('text' in fields)
+        self.assert_(isinstance(fields['text'], CharField))
+        self.assertEqual(fields['text'].document, True)
+        self.assertEqual(fields['text'].use_template, True)
+        
+        self.site.unregister(AnotherMockModel)
+        self.site.register(AnotherMockModel, InvalidSeachIndex)
+        self.assertRaises(SearchFieldError, self.site.all_searchfields)
     
     def test_update_object(self):
         self.site.register(MockModel, FakeSearchIndex)

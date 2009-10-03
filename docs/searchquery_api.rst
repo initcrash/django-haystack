@@ -36,10 +36,12 @@ Backend-Specific Methods
 
 When implementing a new backend, the following methods will need to be created:
 
-``run(self)``
-~~~~~~~~~~~~~
+``run(self, spelling_query=None)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Builds and executes the query. Returns a list of search results.
+
+Optionally passes along an alternate query for spelling suggestions.
 
 ``build_query(self)``
 ~~~~~~~~~~~~~~~~~~~~~
@@ -49,6 +51,12 @@ be sent to the backend.
 
 This method MUST be implemented by each backend, as it will be highly
 specific to each one.
+
+``run_mlt(self)``
+~~~~~~~~~~~~~~~~~
+
+Executes the More Like This. Returns a list of search results similar
+to the provided document (and optionally query).
 
 
 Inheritable Methods
@@ -123,10 +131,10 @@ Restricts the query by altering either the start, end or both offsets.
 
 Clears any existing limits.
 
-``add_boost(self, field, boost_value)``
+``add_boost(self, term, boost_value)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Adds a boosted field and the amount to boost it to the query.
+Adds a boosted term and the amount to boost it to the query.
 
 ``raw_search(self, query_string, **kwargs)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -139,10 +147,8 @@ to build queries. It does however populate the results/hit_count.
 ``more_like_this(self, model_instance)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Returns the "More Like This" results received from the backend.
-
-This method does not affect the internal state of the ``SearchQuery`` used
-to build queries. It does however populate the results/hit_count.
+Allows backends with support for "More Like This" to return results
+similar to the provided instance.
 
 ``add_highlight(self)``
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -154,8 +160,8 @@ Adds highlighting to the search results.
 
 Adds a regular facet on a field.
 
-``add_date_facet(self, field, **kwargs)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``add_date_facet(self, field, start_date, end_date, gap_by, gap_amount)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Adds a date-based facet on a field.
 

@@ -6,7 +6,9 @@ from haystack.exceptions import SearchFieldError
 
 class SearchField(object):
     """The base implementation of a search field."""
-    def __init__(self, model_attr=None, use_template=False, template_name=None, document=False, indexed=True, stored=True, default=None):
+    def __init__(self, model_attr=None, use_template=False, template_name=None, 
+                 document=False, indexed=True, stored=True, default=None,
+                 null=False):
         # Track what the index thinks this field is called.
         self.instance_name = None
         self.model_attr = model_attr
@@ -15,7 +17,15 @@ class SearchField(object):
         self.document = document
         self.indexed = indexed
         self.stored = stored
-        self.default = default
+        self._default = default
+        self.null = null
+    
+    @property
+    def default(self):
+        if callable(self._default):
+            return self._default()
+        
+        return self._default
     
     def prepare(self, obj):
         # Give priority to a template.
@@ -28,7 +38,7 @@ class SearchField(object):
             
             for attr in attrs:
                 if not hasattr(current_object, attr):
-                    return self.default
+                    return self._default
                 
                 current_object = getattr(current_object, attr)
             
@@ -61,43 +71,75 @@ class SearchField(object):
 
 class CharField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = ''
+        if not 'default' in kwargs:
+            kwargs['default'] = ''
+        
         super(CharField, self).__init__(**kwargs)
     
     def prepare(self, obj):
-        return unicode(super(CharField, self).prepare(obj))
+        return self.convert(super(CharField, self).prepare(obj))
+    
+    def convert(self, value):
+        return unicode(value)
 
 
 class IntegerField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = 0
+        if not 'default' in kwargs:
+            kwargs['default'] = 0
+        
         super(IntegerField, self).__init__(**kwargs)
     
     def prepare(self, obj):
-        return int(super(IntegerField, self).prepare(obj))
+        prepared = super(IntegerField, self).prepare(obj)
+        
+        if prepared is None:
+            return None
+        
+        return self.convert(prepared)
+    
+    def convert(self, value):
+        return int(value)
 
 
 class FloatField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = 0.0
+        if not 'default' in kwargs:
+            kwargs['default'] = 0.0
+        
         super(FloatField, self).__init__(**kwargs)
     
     def prepare(self, obj):
-        return float(super(FloatField, self).prepare(obj))
+        prepared = super(FloatField, self).prepare(obj)
+        
+        if prepared is None:
+            return None
+        
+        return self.convert(prepared)
+    
+    def convert(self, value):
+        return float(value)
 
 
 class BooleanField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = False
+        if not 'default' in kwargs:
+            kwargs['default'] = False
+        
         super(BooleanField, self).__init__(**kwargs)
     
     def prepare(self, obj):
-        return bool(super(BooleanField, self).prepare(obj))
+        return self.convert(super(BooleanField, self).prepare(obj))
+    
+    def convert(self, value):
+        return bool(value)
 
 
 class DateField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = ''
+        if not 'default' in kwargs:
+            kwargs['default'] = ''
+        
         super(DateField, self).__init__(**kwargs)
     
     def prepare(self, obj):
@@ -106,7 +148,9 @@ class DateField(SearchField):
 
 class DateTimeField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = ''
+        if not 'default' in kwargs:
+            kwargs['default'] = ''
+        
         super(DateTimeField, self).__init__(**kwargs)
     
     def prepare(self, obj):
@@ -115,8 +159,13 @@ class DateTimeField(SearchField):
 
 class MultiValueField(SearchField):
     def __init__(self, **kwargs):
-        kwargs['default'] = ''
+        if not 'default' in kwargs:
+            kwargs['default'] = ''
+        
         super(MultiValueField, self).__init__(**kwargs)
     
     def prepare(self, obj):
-        return list(super(MultiValueField, self).prepare(obj))
+        return self.convert(super(MultiValueField, self).prepare(obj))
+    
+    def convert(self, value):
+        return list(value)

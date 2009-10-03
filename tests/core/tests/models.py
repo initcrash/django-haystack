@@ -27,6 +27,7 @@ class SearchResultTestCase(TestCase):
         self.assertEqual(self.no_data_sr.model_name, 'mockmodel')
         self.assertEqual(self.no_data_sr.model, MockModel)
         self.assertEqual(self.no_data_sr.verbose_name, u'Mock model')
+        self.assertEqual(self.no_data_sr.verbose_name_plural, u'Mock models')
         self.assertEqual(self.no_data_sr.pk, '1')
         self.assertEqual(self.no_data_sr.score, 2)
         self.assertEqual(self.no_data_sr.stored, None)
@@ -35,6 +36,7 @@ class SearchResultTestCase(TestCase):
         self.assertEqual(self.extra_data_sr.model_name, 'mockmodel')
         self.assertEqual(self.extra_data_sr.model, MockModel)
         self.assertEqual(self.extra_data_sr.verbose_name, u'Mock model')
+        self.assertEqual(self.extra_data_sr.verbose_name_plural, u'Mock models')
         self.assertEqual(self.extra_data_sr.pk, '1')
         self.assertEqual(self.extra_data_sr.score, 3)
         self.assertEqual(self.extra_data_sr.stored, 'I am stored data. How fun.')
@@ -43,6 +45,7 @@ class SearchResultTestCase(TestCase):
         self.assertEqual(self.no_overwrite_data_sr.model_name, 'mockmodel')
         self.assertEqual(self.no_overwrite_data_sr.model, MockModel)
         self.assertEqual(self.no_overwrite_data_sr.verbose_name, u'Mock model')
+        self.assertEqual(self.no_overwrite_data_sr.verbose_name_plural, u'Mock models')
         self.assertEqual(self.no_overwrite_data_sr.pk, '1')
         self.assertEqual(self.no_overwrite_data_sr.score, 4)
         self.assertEqual(self.no_overwrite_data_sr.stored, 'I am stored data. How fun.')
@@ -51,6 +54,11 @@ class SearchResultTestCase(TestCase):
         self.assertEqual(self.no_data_sr.get_additional_fields(), {})
         self.assertEqual(self.extra_data_sr.get_additional_fields(), {'stored': 'I am stored data. How fun.'})
         self.assertEqual(self.no_overwrite_data_sr.get_additional_fields(), {'django_ct': 'haystack.anothermockmodel', 'django_id': 2, 'stored': 'I am stored data. How fun.'})
+    
+    def test_unicode(self):
+        self.assertEqual(self.no_data_sr.__unicode__(), u"<SearchResult: haystack.mockmodel (pk='1')>")
+        self.assertEqual(self.extra_data_sr.__unicode__(), u"<SearchResult: haystack.mockmodel (pk='1')>")
+        self.assertEqual(self.no_overwrite_data_sr.__unicode__(), u"<SearchResult: haystack.mockmodel (pk='1')>")
     
     def test_stored_fields(self):
         # Stow.

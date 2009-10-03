@@ -35,14 +35,16 @@ class SearchResult(object):
             if not key in self.__dict__:
                 self.__dict__[key] = value
                 self._additional_fields.append(key)
-
-
+    
     def __repr__(self):
         return "<SearchResult: %s.%s (pk=%r)>" % (self.app_label, self.model_name, self.pk)
     
+    def __unicode__(self):
+        return force_unicode(self.__repr__())
+    
     def __getattr__(self, attr):
         return self.__dict__.get(attr, None)
-
+    
     def _get_object(self):
         if self._object is None:
             try:
@@ -70,7 +72,12 @@ class SearchResult(object):
         return force_unicode(capfirst(self.model._meta.verbose_name))
     
     verbose_name = property(_get_verbose_name)
-
+    
+    def _get_verbose_name_plural(self):
+        return force_unicode(capfirst(self.model._meta.verbose_name_plural))
+    
+    verbose_name_plural = property(_get_verbose_name_plural)
+    
     def content_type(self):
         """Returns the content type for the result's model instance."""
         return unicode(self.model._meta)

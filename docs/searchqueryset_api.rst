@@ -56,7 +56,7 @@ Searching your document fields is a very common activity. To help mitigate
 possible differences in ``SearchField`` names (and to help the backends deal
 with search queries that inspect the main corpus), there is a special field
 called ``content``. You may use this in any place that other fields names would
-work (e.g. `` filter``, ``exclude``, etc.) to indicate you simply want to
+work (e.g. ``filter``, ``exclude``, etc.) to indicate you simply want to
 search the main documents.
 
 For example::
@@ -93,6 +93,12 @@ Methods That Return A ``SearchQuerySet``
 Returns all results for the query. This is largely a no-op (returns an identical
 copy) but useful for denoting exactly what behavior is going on.
 
+``none(self):``
+~~~~~~~~~~~~~~~
+
+Returns an ``EmptySearchQuerySet`` that behaves like a ``SearchQuerySet`` but
+always yields no results.
+
 ``filter(self, **kwargs)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -104,6 +110,13 @@ the ``HAYSTACK_DEFAULT_OPERATOR`` setting (defaults to ``AND``).
 
 If a string with one or more spaces in it is specified as the value, an exact
 match will be performed on that phrase.
+
+.. warning::
+
+    Any data you pass to ``filter/exclude`` is passed along **unescaped**. If
+    you don't trust the data you're passing along, you should either use
+    ``auto_query`` or use the ``clean`` method on your ``SearchBackend`` to
+    sanitize the data.
 
 Example::
 
@@ -151,6 +164,25 @@ string with a ``-``::
 
     SearchQuerySet().filter(content='foo').order_by('-pub_date')
 
+.. note::
+
+    In general, ordering is locale-specific. Haystack makes no effort to try to
+    reconcile differences between characters from different languages. This
+    means that accented characters will sort closely with the same character
+    and **NOT** necessarily close to the unaccented form of the character.
+    
+    If you want this kind of behavior, you should override the ``prepare_FOO``
+    methods on your ``SearchIndex`` objects to transliterate the characters
+    as you see fit.
+
+.. warning::
+
+    **Whoosh only** If you're planning on ordering by an ``IntegerField`` using
+    Whoosh, you'll need to adequately zero-pad your numbers in the
+    ``prepare_FOO`` method. This is because Whoosh uses UTF-8 string for
+    everything, and from the schema, there is no way to know how a field should
+    be treated.
+
 ``highlight(self)``
 ~~~~~~~~~~~~~~~~~~~
 
@@ -169,16 +201,16 @@ Example::
 
     SearchQuerySet().filter(content='foo').models(BlogEntry, Comment)
 
-``boost(self, **kwargs)``
-~~~~~~~~~~~~~~~~~~~~~~~~~
+``boost(self, term, boost_value)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Boosts a certain term of the query. You should provide pairs, where the
-parameter is the term to be boosted and the value is the amount to boost it by.
-Boost amounts may be either an integer or a float.
+Boosts a certain term of the query. You provide the term to be boosted and the
+value is the amount to boost it by. Boost amounts may be either an integer or a
+float.
 
 Example::
 
-    SearchQuerySet().filter(content='foo').boost(bar=1.5)
+    SearchQuerySet().filter(content='foo').boost('bar', 1.5)
 
 ``facet(self, field)``
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -194,20 +226,18 @@ Example::
     # Count document hits for each author within the index.
     SearchQuerySet().filter(content='foo').facet('author')
 
-``date_facet(self, field, **kwargs)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``date_facet(self, field, start_date, end_date, gap_by, gap_amount=1)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Adds faceting to a query for the provided field by date. You provide the field
-(from one of the ``SearchIndex`` classes) you like to facet on and any
-parameters your engine of choice requires (Solr uses ``start_date``,
-``end_date`` and ``gap``).
+(from one of the ``SearchIndex`` classes) you like to facet on, a ``start_date``
+(either ``datetime.datetime`` or ``datetime.date``), an ``end_date`` and the
+amount of time between gaps as ``gap_by`` (one of ``'year'``, ``'month'``,
+``'day'``, ``'hour'``, ``'minute'`` or ``'second'``).
 
-.. note::
-
-    This syntax will likely change before 1.0 release. It would be nice to
-    have a nicer, less backend-specific API (likely using the same filter syntax as
-    other methods). This is waiting on implementing other backends that support
-    faceting and ensuring that the API meets their needs as well.
+You can also optionally provide a ``gap_amount`` to specify a different
+increment than ``1``. For example, specifying gaps by week (every seven days)
+would would be ``gap_by='day', gap_amount=7``).
 
 In the search results you get back, facet counts will be populated in the
 ``SearchResult`` object. You can access them via the ``facet_counts`` method.
@@ -215,7 +245,7 @@ In the search results you get back, facet counts will be populated in the
 Example::
 
     # Count document hits for each day between 2009-06-07 to 2009-07-07 within the index.
-    SearchQuerySet().filter(content='foo').date_facet('pub_date', start_date=datetime.date(2009, 6, 7), end_date=datetime.date(2009, 7, 7), gap='+1DAY')
+    SearchQuerySet().filter(content='foo').date_facet('pub_date', start_date=datetime.date(2009, 6, 7), end_date=datetime.date(2009, 7, 7), gap_by='day')
 
 ``query_facet(self, field, query)``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -335,6 +365,31 @@ Example::
 
 This method is somewhat naive but works well enough for simple, common cases.
 
+``more_like_this(self, model_instance)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Finds similar results to the object passed in.
+
+You should pass in an instance of a model (for example, one fetched via a
+``get`` in Django's ORM). This will execute a query on the backend that searches
+for similar results. The instance you pass in should be an indexed object.
+Previously called methods will have an effect on the provided results.
+
+It will evaluate its own backend-specific query and populate the
+`SearchQuerySet`` in the same manner as other methods.
+
+Example::
+
+    entry = Entry.objects.get(slug='haystack-one-oh-released')
+    mlt = SearchQuerySet().more_like_this(entry)
+    mlt.count() # 5
+    mlt[0].object.title # "Haystack Beta 1 Released"
+    
+    # ...or...
+    mlt = SearchQuerySet().filter(public=True).exclude(pub_date__lte=datetime.date(2009, 7, 21)).more_like_this(entry)
+    mlt.count() # 2
+    mlt[0].object.title # "Haystack Beta 1 Released"
+
 
 Methods That Do Not Return A ``SearchQuerySet``
 -----------------------------------------------
@@ -380,30 +435,6 @@ found::
     # Identical to:
     foo = SearchQuerySet().filter(content='foo').order_by('-pub_date')[0]
 
-``more_like_this(self, model_instance)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Finds similar results to the object passed in.
-
-You should pass in an instance of a model (for example, one fetched via a
-``get`` in Django's ORM). This will execute a query on the backend that searches
-for similar results. The instance you pass in should be an indexed object.
-This method does not actually effect the existing ``SearchQuerySet`` but will
-ignore any existing constraints.
-
-It will evaluate its own backend-specific query and return a dictionary with two
-keys: ``results`` (which will be a list of ``SearchResult`` objects) and
-``hits`` (an integer count of the total number of similar results).
-
-The number of results returned will be backend/configuration specific.
-
-Example::
-
-    entry = Entry.objects.get(slug='haystack-one-oh-released')
-    mlt = SearchQuerySet().more_like_this(entry)
-    mlt['hits'] # 5
-    mlt['results'][0].object.title # "Haystack Beta 1 Released"
-
 ``facet_counts(self)``
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -441,8 +472,8 @@ Example::
     #     'queries': {}
     # }
 
-``spelling_suggestion(self)``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``spelling_suggestion(self, preferred_query=None)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Returns the spelling suggestion found by the query.
 
@@ -454,10 +485,19 @@ run. Search results will be populated as normal but with an additional spelling
 suggestion. Note that this does *NOT* run the revised query, only suggests
 improvements.
 
+If provided, the optional argument to this method lets you specify an alternate
+query for the spelling suggestion to be run on. This is useful for passing along
+a raw user-provided query, especially when there are many methods chained on the
+``SearchQuerySet``.
+
 Example::
 
     sqs = SearchQuerySet().auto_query('mor exmples')
     sqs.spelling_suggestion() # u'more examples'
+    
+    # ...or...
+    suggestion = SearchQuerySet().spelling_suggestion('moar exmples')
+    suggestion # u'more examples'
 
 
 .. _field-lookups:
@@ -488,3 +528,11 @@ Example::
     # Other usages look like:
     SearchQuerySet().filter(pub_date__gte=datetime.date(2008, 1, 1), pub_date__lt=datetime.date(2009, 1, 1))
     SearchQuerySet().filter(author__in=['daniel', 'john', 'jane'])
+
+
+``EmptySearchQuerySet``
+=======================
+
+Also included in Haystack is an ``EmptySearchQuerySet`` class. It behaves just
+like ``SearchQuerySet`` but will always return zero results. This is useful for
+places where you want no query to occur or results to be returned.

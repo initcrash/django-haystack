@@ -3,7 +3,7 @@ import re
 from django.db.models.base import ModelBase
 from django.utils.encoding import force_unicode
 from haystack.constants import VALID_FILTERS, FILTER_SEPARATOR
-from haystack.exceptions import SearchBackendError
+from haystack.exceptions import SearchBackendError, MoreLikeThisError, FacetingError
 try:
     set
 except NameError:
@@ -11,6 +11,7 @@ except NameError:
 
 
 IDENTIFIER_REGEX = re.compile('^[\w\d_]+\.[\w\d_]+\.\d+$')
+VALID_GAPS = ['year', 'month', 'day', 'hour', 'minute', 'second']
 
 
 class BaseSearchBackend(object):
@@ -75,7 +76,7 @@ class BaseSearchBackend(object):
 
     def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
                fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
-               narrow_queries=None, **kwargs):
+               narrow_queries=None, spelling_query=None, **kwargs):
         """
         Takes a query to search on and returns dictionary.
         
@@ -98,7 +99,7 @@ class BaseSearchBackend(object):
         """
         return force_unicode(value)
     
-    def more_like_this(self, model_instance):
+    def more_like_this(self, model_instance, additional_query_string=None):
         """
         Takes a model object and returns results the backend thinks are similar.
         
@@ -106,6 +107,15 @@ class BaseSearchBackend(object):
         specific to each one.
         """
         raise NotImplementedError("Subclasses must provide a way to fetch similar record via the 'more_like_this' method if supported by the backend.")
+    
+    def build_schema(self, fields):
+        """
+        Takes a dictionary of fields and returns schema information.
+        
+        This method MUST be implemented by each backend, as it will be highly
+        specific to each one.
+        """
+        raise NotImplementedError("Subclasses must provide a way to build their schema.")
 
 
 # Alias for easy loading within SearchQuery objects.
@@ -205,6 +215,8 @@ class BaseSearchQuery(object):
         self.date_facets = {}
         self.query_facets = {}
         self.narrow_queries = set()
+        self._more_like_this = False
+        self._mlt_instance = None
         self._results = None
         self._hit_count = None
         self._facet_counts = None
@@ -235,14 +247,27 @@ class BaseSearchQuery(object):
         
         self.backend = loaded_backend.SearchBackend()
     
-    def run(self):
+    def run(self, spelling_query=None):
         """Builds and executes the query. Returns a list of search results."""
         final_query = self.build_query()
-        results = self.backend.search(final_query, highlight=self.highlight)
+        results = self.backend.search(final_query, highlight=self.highlight, spelling_query=spelling_query)
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
         self._facet_counts = results.get('facets', {})
         self._spelling_suggestion = results.get('spelling_suggestion', None)
+    
+    def run_mlt(self):
+        """
+        Executes the More Like This. Returns a list of search results similar
+        to the provided document (and optionally query).
+        """
+        if self._more_like_this is False or self._mlt_instance is None:
+            raise MoreLikeThisError("No instance was provided to determine 'More Like This' results.")
+        
+        additional_query_string = self.build_query()
+        results = self.backend.more_like_this(self._mlt_instance, additional_query_string)
+        self._results = results.get('results', [])
+        self._hit_count = results.get('hits', 0)
     
     def get_count(self):
         """
@@ -252,7 +277,11 @@ class BaseSearchQuery(object):
         the results.
         """
         if self._hit_count is None:
-            self.run()
+            if self._more_like_this:
+                # Special case for MLT.
+                self.run_mlt()
+            else:
+                self.run()
         
         return self._hit_count
     
@@ -264,7 +293,11 @@ class BaseSearchQuery(object):
         the results.
         """
         if self._results is None:
-            self.run()
+            if self._more_like_this:
+                # Special case for MLT.
+                self.run_mlt()
+            else:
+                self.run()
         
         return self._results
     
@@ -280,7 +313,7 @@ class BaseSearchQuery(object):
         
         return self._facet_counts
     
-    def get_spelling_suggestion(self):
+    def get_spelling_suggestion(self, preferred_query=None):
         """
         Returns the spelling suggestion received from the backend.
         
@@ -288,7 +321,7 @@ class BaseSearchQuery(object):
         the results.
         """
         if self._spelling_suggestion is None:
-            self.run()
+            self.run(spelling_query=preferred_query)
         
         return self._spelling_suggestion
     
@@ -368,9 +401,9 @@ class BaseSearchQuery(object):
         """Clears any existing limits."""
         self.start_offset, self.end_offset = 0, None
     
-    def add_boost(self, field, boost_value):
-        """Adds a boosted field and the amount to boost it to the query."""
-        self.boost[field] = boost_value
+    def add_boost(self, term, boost_value):
+        """Adds a boosted term and the amount to boost it to the query."""
+        self.boost[term] = boost_value
     
     def raw_search(self, query_string, **kwargs):
         """
@@ -385,14 +418,11 @@ class BaseSearchQuery(object):
     
     def more_like_this(self, model_instance):
         """
-        Returns the "More Like This" results received from the backend.
-        
-        This method does not affect the internal state of the SearchQuery used
-        to build queries. It does however populate the results/hit_count.
+        Allows backends with support for "More Like This" to return results
+        similar to the provided instance.
         """
-        results = self.backend.more_like_this(model_instance)
-        self._results = results.get('results', [])
-        self._hit_count = results.get('hits', 0)
+        self._more_like_this = True
+        self._mlt_instance = model_instance
     
     def add_highlight(self):
         """Adds highlighting to the search results."""
@@ -402,9 +432,18 @@ class BaseSearchQuery(object):
         """Adds a regular facet on a field."""
         self.facets.add(field)
     
-    def add_date_facet(self, field, **kwargs):
+    def add_date_facet(self, field, start_date, end_date, gap_by, gap_amount=1):
         """Adds a date-based facet on a field."""
-        self.date_facets[field] = kwargs
+        if not gap_by in VALID_GAPS:
+            raise FacetingError("The gap_by ('%s') must be one of the following: %s." (gap_by, ', '.join(VALID_GAPS)))
+        
+        details = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'gap_by': gap_by,
+            'gap_amount': gap_amount,
+        }
+        self.date_facets[field] = details
     
     def add_query_facet(self, field, query):
         """Adds a query facet on a field."""
@@ -413,6 +452,16 @@ class BaseSearchQuery(object):
     def add_narrow_query(self, query):
         """Adds a existing facet on a field."""
         self.narrow_queries.add(query)
+    
+    def _reset(self):
+        """
+        Resets the instance's internal state to appear as though no query has
+        been run before. Only need to tweak a few variables we check.
+        """
+        self._results = None
+        self._hit_count = None
+        self._facet_counts = None
+        self._spelling_suggestion = None
     
     def _clone(self, klass=None):
         if klass is None:

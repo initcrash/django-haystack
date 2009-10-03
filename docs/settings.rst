@@ -23,6 +23,25 @@ Valid options are::
 Defaults to ``AND``.
 
 
+``HAYSTACK_SITECONF``
+=====================
+
+**Required**
+
+This setting controls what module should be loaded to setup your ``SearchSite``.
+The module should be on your ``PYTHONPATH`` and should contain only the calls
+necessary to setup Haystack to your needs.
+
+The convention is to name this file ``search_sites`` and place it in the same
+directory as your ``settings.py`` and/or ``urls.py``.
+
+Valid options are::
+
+    HAYSTACK_SITECONF = 'myproject.search_sites'
+
+No default is provided.
+
+
 ``HAYSTACK_SEARCH_ENGINE``
 ==========================
 
@@ -119,6 +138,27 @@ document root of your site and that you take appropriate security precautions.
 An example::
 
     HAYSTACK_WHOOSH_PATH = '/home/mysite/whoosh_index'
+
+No default is provided.
+
+
+``HAYSTACK_XAPIAN_PATH``
+========================
+
+**Required when using the ``xapian`` backend**
+
+This setting controls where on the filesystem the Xapian indexes will be stored.
+The user must have the appropriate permissions for reading and writing to this
+directory.
+
+Any trailing slashes should be left off.
+
+Finally, you should ensure that this directory is not located within the
+document root of your site and that you take appropriate security precautions.
+
+An example::
+
+    HAYSTACK_XAPIAN_PATH = '/home/mysite/xapian_index'
 
 No default is provided.
 

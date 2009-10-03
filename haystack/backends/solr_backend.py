@@ -4,7 +4,8 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db.models.loading import get_model
 from django.utils.encoding import force_unicode
 from haystack.backends import BaseSearchBackend, BaseSearchQuery
-from haystack.exceptions import MissingDependency
+from haystack.exceptions import MissingDependency, MoreLikeThisError
+from haystack.fields import DateField, DateTimeField, IntegerField, FloatField, BooleanField, MultiValueField
 from haystack.models import SearchResult
 try:
     from pysolr import Solr
@@ -74,9 +75,12 @@ class SearchBackend(BaseSearchBackend):
 
     def search(self, query_string, sort_by=None, start_offset=0, end_offset=None,
                fields='', highlight=False, facets=None, date_facets=None, query_facets=None,
-               narrow_queries=None, **kwargs):
+               narrow_queries=None, spelling_query=None, **kwargs):
         if len(query_string) == 0:
-            return []
+            return {
+                'results': [],
+                'hits': 0,
+            }
         
         kwargs = {
             'fl': '* score',
@@ -102,6 +106,9 @@ class SearchBackend(BaseSearchBackend):
             kwargs['spellcheck'] = 'true'
             kwargs['spellcheck.collate'] = 'true'
             kwargs['spellcheck.count'] = 1
+            
+            if spelling_query:
+                kwargs['spellcheck.q'] = spelling_query
         
         if facets is not None:
             kwargs['facet'] = 'on'
@@ -115,7 +122,12 @@ class SearchBackend(BaseSearchBackend):
                 # Date-based facets in Solr kinda suck.
                 kwargs["f.%s.facet.date.start" % key] = self.conn._from_python(value.get('start_date'))
                 kwargs["f.%s.facet.date.end" % key] = self.conn._from_python(value.get('end_date'))
-                kwargs["f.%s.facet.date.gap" % key] = value.get('gap')
+                gap_string = value.get('gap_by').upper()
+                
+                if value.get('gap_amount') != 1:
+                    gap_string = "%d%sS" % (value.get('gap_amount'), gap_string)
+                
+                kwargs["f.%s.facet.date.gap" % key] = "/%s" % gap_string
         
         if query_facets is not None:
             kwargs['facet'] = 'on'
@@ -127,10 +139,23 @@ class SearchBackend(BaseSearchBackend):
         raw_results = self.conn.search(query_string, **kwargs)
         return self._process_results(raw_results, highlight=highlight)
     
-    def more_like_this(self, model_instance):
+    def more_like_this(self, model_instance, additional_query_string=None, start_offset=0, end_offset=None, **kwargs):
         index = self.site.get_index(model_instance.__class__)
-        field_name = index.get_content_field()    
-        raw_results = self.conn.more_like_this("id:%s" % self.get_identifier(model_instance), field_name, fl='*,score')
+        field_name = index.get_content_field()
+        params = {
+            'fl': '*,score',
+        }
+        
+        if start_offset is not None:
+            params['start'] = start_offset
+        
+        if end_offset is not None:
+            params['rows'] = end_offset
+        
+        if additional_query_string:
+            params['fq'] = additional_query_string
+        
+        raw_results = self.conn.more_like_this("id:%s" % self.get_identifier(model_instance), field_name, **params)
         return self._process_results(raw_results)
     
     def _process_results(self, raw_results, highlight=False):
@@ -165,25 +190,27 @@ class SearchBackend(BaseSearchBackend):
         for raw_result in raw_results.docs:
             app_label, model_name = raw_result['django_ct'].split('.')
             additional_fields = {}
-            
-            for key, value in raw_result.items():
-                additional_fields[str(key)] = self.conn._to_python(value)
-            
-            del(additional_fields['django_ct'])
-            del(additional_fields['django_id'])
-            del(additional_fields['score'])
-            
-            if raw_result['id'] in getattr(raw_results, 'highlighting', {}):
-                additional_fields['highlighted'] = raw_results.highlighting[raw_result['id']]
-            
             model = get_model(app_label, model_name)
             
-            if model:
-                if model in indexed_models:
-                    result = SearchResult(app_label, model_name, raw_result['django_id'], raw_result['score'], **additional_fields)
-                    results.append(result)
-                else:
-                    hits -= 1
+            if model and model in indexed_models:
+                for key, value in raw_result.items():
+                    index = site.get_index(model)
+                    string_key = str(key)
+                    
+                    if string_key in index.fields and hasattr(index.fields[string_key], 'convert'):
+                        additional_fields[string_key] = index.fields[string_key].convert(value)
+                    else:
+                        additional_fields[string_key] = self.conn._to_python(value)
+                
+                del(additional_fields['django_ct'])
+                del(additional_fields['django_id'])
+                del(additional_fields['score'])
+                
+                if raw_result['id'] in getattr(raw_results, 'highlighting', {}):
+                    additional_fields['highlighted'] = raw_results.highlighting[raw_result['id']]
+                
+                result = SearchResult(app_label, model_name, raw_result['django_id'], raw_result['score'], **additional_fields)
+                results.append(result)
             else:
                 hits -= 1
         
@@ -193,6 +220,45 @@ class SearchBackend(BaseSearchBackend):
             'facets': facets,
             'spelling_suggestion': spelling_suggestion,
         }
+    
+    def build_schema(self, fields):
+        content_field_name = ''
+        schema_fields = []
+        
+        for field_name, field_class in fields.items():
+            field_data = {
+                'field_name': field_name,
+                'type': 'text',
+                'indexed': 'true',
+                'multi_valued': 'false',
+            }
+            
+            if field_class.document is True:
+                content_field_name = field_name
+            
+            if field_class.indexed is False:
+                field_data['indexed'] = 'false'
+            
+            # DRL_FIXME: Perhaps move to something where, if none of these
+            #            checks succeed, call a custom method on the form that
+            #            returns, per-backend, the right type of storage?
+            # DRL_FIXME: Also think about removing `isinstance` and replacing
+            #            it with a method call/string returned (like 'text' or
+            #            'date').
+            if isinstance(field_class, (DateField, DateTimeField)):
+                field_data['type'] = 'date'
+            elif isinstance(field_class, IntegerField):
+                field_data['type'] = 'slong'
+            elif isinstance(field_class, FloatField):
+                field_data['type'] = 'sfloat'
+            elif isinstance(field_class, BooleanField):
+                field_data['type'] = 'boolean'
+            elif isinstance(field_class, MultiValueField):
+                field_data['multi_valued'] = 'true'
+            
+            schema_fields.append(field_data)
+        
+        return (content_field_name, schema_fields)
 
 
 class SearchQuery(BaseSearchQuery):
@@ -276,7 +342,7 @@ class SearchQuery(BaseSearchQuery):
         
         return final_query
     
-    def run(self):
+    def run(self, spelling_query=None):
         """Builds and executes the query. Returns a list of search results."""
         final_query = self.build_query()
         kwargs = {
@@ -312,8 +378,28 @@ class SearchQuery(BaseSearchQuery):
         if self.narrow_queries:
             kwargs['narrow_queries'] = self.narrow_queries
         
+        if spelling_query:
+            kwargs['spelling_query'] = spelling_query
+        
         results = self.backend.search(final_query, **kwargs)
         self._results = results.get('results', [])
         self._hit_count = results.get('hits', 0)
         self._facet_counts = results.get('facets', {})
         self._spelling_suggestion = results.get('spelling_suggestion', None)
+    
+    def run_mlt(self):
+        """Builds and executes the query. Returns a list of search results."""
+        if self._more_like_this is False or self._mlt_instance is None:
+            raise MoreLikeThisError("No instance was provided to determine 'More Like This' results.")
+        
+        additional_query_string = self.build_query()
+        kwargs = {
+            'start_offset': self.start_offset,
+        }
+        
+        if self.end_offset is not None:
+            kwargs['end_offset'] = self.end_offset - self.start_offset
+        
+        results = self.backend.more_like_this(self._mlt_instance, additional_query_string, **kwargs)
+        self._results = results.get('results', [])
+        self._hit_count = results.get('hits', 0)

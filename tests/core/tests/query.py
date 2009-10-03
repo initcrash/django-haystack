@@ -5,10 +5,10 @@ from haystack.backends import QueryFilter, BaseSearchQuery
 from haystack.backends.dummy_backend import SearchBackend as DummySearchBackend
 from haystack.backends.dummy_backend import SearchQuery as DummySearchQuery
 from haystack.models import SearchResult
-from haystack.query import SearchQuerySet
+from haystack.query import SearchQuerySet, EmptySearchQuerySet
 from haystack.sites import SearchSite
 from core.models import MockModel, AnotherMockModel
-from core.tests.mocks import MockSearchQuery, MockSearchBackend, MOCK_SEARCH_RESULTS
+from core.tests.mocks import MockSearchQuery, MockSearchBackend, MixedMockSearchBackend, MOCK_SEARCH_RESULTS
 
 
 class QueryFilterTestCase(TestCase):
@@ -148,11 +148,11 @@ class BaseSearchQueryTestCase(TestCase):
         self.assertEqual(self.bsq.facets, set(['foo', 'bar']))
     
     def test_add_date_facet(self):
-        self.bsq.add_date_facet('foo', start_date=datetime.date(2009, 2, 25))
-        self.assertEqual(self.bsq.date_facets, {'foo': {'start_date': datetime.date(2009, 2, 25)}})
+        self.bsq.add_date_facet('foo', start_date=datetime.date(2009, 2, 25), end_date=datetime.date(2009, 3, 25), gap_by='day')
+        self.assertEqual(self.bsq.date_facets, {'foo': {'gap_by': 'day', 'start_date': datetime.date(2009, 2, 25), 'end_date': datetime.date(2009, 3, 25), 'gap_amount': 1}})
         
-        self.bsq.add_date_facet('bar')
-        self.assertEqual(self.bsq.date_facets, {'foo': {'start_date': datetime.date(2009, 2, 25)}, 'bar': {}})
+        self.bsq.add_date_facet('bar', start_date=datetime.date(2008, 1, 1), end_date=datetime.date(2009, 12, 1), gap_by='month')
+        self.assertEqual(self.bsq.date_facets, {'foo': {'gap_by': 'day', 'start_date': datetime.date(2009, 2, 25), 'end_date': datetime.date(2009, 3, 25), 'gap_amount': 1}, 'bar': {'gap_by': 'month', 'start_date': datetime.date(2008, 1, 1), 'end_date': datetime.date(2009, 12, 1), 'gap_amount': 1}})
     
     def test_add_query_facet(self):
         self.bsq.add_query_facet('foo', 'bar')
@@ -192,7 +192,7 @@ class BaseSearchQueryTestCase(TestCase):
         self.bsq.add_boost('foo', 2)
         self.bsq.add_highlight()
         self.bsq.add_field_facet('foo')
-        self.bsq.add_date_facet('foo')
+        self.bsq.add_date_facet('foo', start_date=datetime.date(2009, 1, 1), end_date=datetime.date(2009, 1, 31), gap_by='day')
         self.bsq.add_query_facet('foo', 'bar')
         self.bsq.add_narrow_query('foo:bar')
         
@@ -217,6 +217,7 @@ class SearchQuerySetTestCase(TestCase):
         super(SearchQuerySetTestCase, self).setUp()
         self.bsqs = SearchQuerySet(query=DummySearchQuery(backend=DummySearchBackend()))
         self.msqs = SearchQuerySet(query=MockSearchQuery(backend=MockSearchBackend()))
+        self.mmsqs = SearchQuerySet(query=MockSearchQuery(backend=MixedMockSearchBackend()))
         
         # Stow.
         self.old_site = haystack.site
@@ -235,6 +236,11 @@ class SearchQuerySetTestCase(TestCase):
         
         self.assertEqual(len(self.msqs), 100)
     
+    def test_repr(self):
+        self.assertEqual(repr(self.bsqs), '[]')
+        
+        self.assertEqual(repr(self.msqs), "[<SearchResult: core.MockModel (pk=0)>, <SearchResult: core.MockModel (pk=1)>, <SearchResult: core.MockModel (pk=2)>, <SearchResult: core.MockModel (pk=3)>, <SearchResult: core.MockModel (pk=4)>, <SearchResult: core.MockModel (pk=5)>, <SearchResult: core.MockModel (pk=6)>, <SearchResult: core.MockModel (pk=7)>, <SearchResult: core.MockModel (pk=8)>, <SearchResult: core.MockModel (pk=9)>, <SearchResult: core.MockModel (pk=10)>, <SearchResult: core.MockModel (pk=11)>, <SearchResult: core.MockModel (pk=12)>, <SearchResult: core.MockModel (pk=13)>, <SearchResult: core.MockModel (pk=14)>, <SearchResult: core.MockModel (pk=15)>, <SearchResult: core.MockModel (pk=16)>, <SearchResult: core.MockModel (pk=17)>, <SearchResult: core.MockModel (pk=18)>, '...(remaining elements truncated)...']")
+    
     def test_iter(self):
         # Dummy always returns [].
         self.assertEqual([result for result in self.bsqs.all()], [])
@@ -252,12 +258,35 @@ class SearchQuerySetTestCase(TestCase):
         
         for offset, result in enumerate(results._manual_iter()):
             self.assertEqual(result, MOCK_SEARCH_RESULTS[offset])
+        
+        # Test to ensure we properly fill the cache, even if we get fewer
+        # results back (not in the SearchSite) than the hit count indicates.
+        # This will hang indefinitely if broken.
+        results = self.mmsqs.all()
+        self.assertEqual([result.pk for result in results._manual_iter()], [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
     
     def test_fill_cache(self):
         results = self.msqs.all()
         self.assertEqual(len(results._result_cache), 0)
         results._fill_cache()
+        self.assertEqual(len(results._result_cache), 10)
+        results._fill_cache()
         self.assertEqual(len(results._result_cache), 20)
+        
+        # Test to ensure we properly fill the cache, even if we get fewer
+        # results back (not in the SearchSite) than the hit count indicates.
+        results = self.mmsqs.all()
+        self.assertEqual(len(results._result_cache), 0)
+        self.assertEqual([result.pk for result in results._result_cache], [])
+        results._fill_cache()
+        self.assertEqual(len(results._result_cache), 10)
+        self.assertEqual([result.pk for result in results._result_cache], [0, 1, 2, 3, 4, 5, 6, 7, 8, 10])
+        results._fill_cache()
+        self.assertEqual(len(results._result_cache), 20)
+        self.assertEqual([result.pk for result in results._result_cache], [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22])
+        results._fill_cache()
+        self.assertEqual(len(results._result_cache), 27)
+        self.assertEqual([result.pk for result in results._result_cache], [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29])
     
     def test_cache_is_full(self):
         # Dummy always has a count of 0 and an empty _result_cache, hence True.
@@ -307,7 +336,7 @@ class SearchQuerySetTestCase(TestCase):
         self.assertEqual(len(sqs.query.models), 2)
     
     def test_boost(self):
-        sqs = self.bsqs.boost(foo=10)
+        sqs = self.bsqs.boost('foo', 10)
         self.assert_(isinstance(sqs, SearchQuerySet))
         self.assertEqual(len(sqs.query.boost.keys()), 1)
     
@@ -321,6 +350,7 @@ class SearchQuerySetTestCase(TestCase):
         sqs = self.bsqs.filter(content='Indx')
         self.assert_(isinstance(sqs, SearchQuerySet))
         self.assertEqual(sqs.spelling_suggestion(), None)
+        self.assertEqual(sqs.spelling_suggestion('indexy'), None)
     
     def test_raw_search(self):
         self.assertEqual(len(self.bsqs.raw_search('foo')), 0)
@@ -361,6 +391,10 @@ class SearchQuerySetTestCase(TestCase):
         sqs = self.bsqs.auto_query('test "my thing" search \'moar quotes\' "foo -stuff')
         self.assert_(isinstance(sqs, SearchQuerySet))
         self.assertEqual([repr(the_filter) for the_filter in sqs.query.query_filters], ['<QueryFilter: AND content__exact=my thing>', '<QueryFilter: AND content__exact=moar quotes>', '<QueryFilter: AND content__exact=test>', '<QueryFilter: AND content__exact=search>', '<QueryFilter: AND content__exact="foo>', '<QueryFilter: NOT content__exact=stuff>'])
+        
+        sqs = self.bsqs.auto_query('test - stuff')
+        self.assert_(isinstance(sqs, SearchQuerySet))
+        self.assertEqual([repr(the_filter) for the_filter in sqs.query.query_filters], ['<QueryFilter: AND content__exact=test>', '<QueryFilter: AND content__exact=->', '<QueryFilter: AND content__exact=stuff>'])
     
     def test_count(self):
         self.assertEqual(self.bsqs.count(), 0)
@@ -390,11 +424,11 @@ class SearchQuerySetTestCase(TestCase):
         self.assertEqual(len(sqs2.query.facets), 2)
     
     def test_date_facets(self):
-        sqs = self.bsqs.date_facet('foo', start_date=datetime.date(2008, 2, 25), end_date=datetime.date(2009, 2, 25), gap='/MONTH')
+        sqs = self.bsqs.date_facet('foo', start_date=datetime.date(2008, 2, 25), end_date=datetime.date(2009, 2, 25), gap_by='month')
         self.assert_(isinstance(sqs, SearchQuerySet))
         self.assertEqual(len(sqs.query.date_facets), 1)
         
-        sqs2 = self.bsqs.date_facet('foo', start_date=datetime.date(2008, 2, 25), end_date=datetime.date(2009, 2, 25), gap='/MONTH').date_facet('bar', start_date=datetime.date(2007, 2, 25), end_date=datetime.date(2009, 2, 25), gap='/YEAR')
+        sqs2 = self.bsqs.date_facet('foo', start_date=datetime.date(2008, 2, 25), end_date=datetime.date(2009, 2, 25), gap_by='month').date_facet('bar', start_date=datetime.date(2007, 2, 25), end_date=datetime.date(2009, 2, 25), gap_by='year')
         self.assert_(isinstance(sqs2, SearchQuerySet))
         self.assertEqual(len(sqs2.query.date_facets), 2)
     
@@ -432,3 +466,28 @@ class SearchQuerySetTestCase(TestCase):
         sqs = self.bsqs.filter(content='bar')
         self.assert_(isinstance(sqs, SearchQuerySet))
         self.assertEqual(len(sqs.query.query_filters), 1)
+    
+    def test_none(self):
+        sqs = self.bsqs.none()
+        self.assert_(isinstance(sqs, EmptySearchQuerySet))
+        self.assertEqual(len(sqs), 0)
+
+
+class EmptySearchQuerySetTestCase(TestCase):
+    def setUp(self):
+        super(EmptySearchQuerySetTestCase, self).setUp()
+        self.esqs = EmptySearchQuerySet()
+    
+    def test_get_count(self):
+        self.assertEqual(self.esqs.count(), 0)
+        self.assertEqual(len(self.esqs.all()), 0)
+    
+    def test_filter(self):
+        sqs = self.esqs.filter(content='foo')
+        self.assert_(isinstance(sqs, EmptySearchQuerySet))
+        self.assertEqual(len(sqs), 0)
+    
+    def test_exclude(self):
+        sqs = self.esqs.exclude(content='foo')
+        self.assert_(isinstance(sqs, EmptySearchQuerySet))
+        self.assertEqual(len(sqs), 0)

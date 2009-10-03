@@ -3,10 +3,11 @@ Welcome to Haystack!
 
 Haystack provides modular search for Django. It features a unified, familiar
 API that allows you to plug in different search backends (such as Solr_,
-Whoosh_, etc.) without having to modify your code.
+Whoosh_, Xapian_, etc.) without having to modify your code.
 
 .. _Solr: http://lucene.apache.org/solr/
 .. _Whoosh: http://whoosh.ca/
+.. _Xapian: http://xapian.org/
 
 
 Getting Started
@@ -24,7 +25,9 @@ you up and running:
    :maxdepth: 1
    
    views_and_forms
+   glossary
    faq
+   who_uses
    installing_search_engines
 
 
@@ -37,6 +40,7 @@ you may want to include in your application.
 .. toctree::
    :maxdepth: 1
    
+   best_practices
    faceting
 
 

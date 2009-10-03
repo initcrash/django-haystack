@@ -6,13 +6,16 @@ Table Of Contents
    
    index
    tutorial
+   glossary
    views_and_forms
    architecture_overview
    backend_support
    installing_search_engines
    settings
    faq
+   who_uses
    
+   best_practices
    faceting
    
    searchqueryset_api

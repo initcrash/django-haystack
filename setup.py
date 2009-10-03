@@ -13,12 +13,12 @@ setup(
         'haystack',
         'haystack.backends',
         'haystack.management',
-        'haystack.management.commands'
+        'haystack.management.commands',
+        'haystack.templatetags',
     ],
     package_data={
         'haystack': ['templates/search_configuration/*']
     },
-    zip_safe=False,
     classifiers=['Development Status :: 4 - Beta',
                  'Environment :: Web Environment',
                  'Framework :: Django',

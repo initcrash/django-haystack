@@ -21,3 +21,11 @@ class AlreadyRegistered(HaystackError):
 class NotRegistered(HaystackError):
     """Raised when a model is not registered with a site."""
     pass
+
+class MoreLikeThisError(HaystackError):
+    """Raised when a model instance has not been provided for More Like This."""
+    pass
+
+class FacetingError(HaystackError):
+    """Raised when incorrect arguments have been provided for faceting."""
+    pass
